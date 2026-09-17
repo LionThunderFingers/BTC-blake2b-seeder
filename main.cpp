@@ -219,6 +219,9 @@ public:
         filter_whitelist.insert(NODE_NETWORK_LIMITED | NODE_WITNESS | NODE_P2P_V2); // xc08
         filter_whitelist.insert(NODE_NETWORK_LIMITED | NODE_WITNESS | NODE_P2P_V2 | NODE_COMPACT_FILTERS); // xc48
         filter_whitelist.insert(NODE_NETWORK_LIMITED | NODE_WITNESS | NODE_BLOOM); // x40c
+        // BLAKE2b fork nodes
+        filter_whitelist.insert(NODE_NETWORK | NODE_WITNESS | NODE_BLAKE2B); // x10000009
+        filter_whitelist.insert(NODE_NETWORK_LIMITED | NODE_WITNESS | NODE_BLAKE2B); // x10000408
     }
     if (host != NULL && ns == NULL) showHelp = true;
     if (showHelp) fprintf(stderr, help, argv[0]);
@@ -341,7 +344,7 @@ extern "C" int GetIPList(void *data, char *requestedHostname, addr_t* addr, int 
 
   uint64_t requestedFlags = 0;
   int hostlen = strlen(requestedHostname);
-  if (hostlen > 1 && requestedHostname[0] == 'x' && requestedHostname[1] != '0') {
+  if (hostlen > 1 && (requestedHostname[0] == 'x' || requestedHostname[0] == 'X') && requestedHostname[1] != '0') {
     char *pEnd;
     uint64_t flags = (uint64_t)strtoull(requestedHostname+1, &pEnd, 16);
     if (*pEnd == '.' && pEnd <= requestedHostname+17 && std::find(thread->filterWhitelist.begin(), thread->filterWhitelist.end(), flags) != thread->filterWhitelist.end())
@@ -351,6 +354,8 @@ extern "C" int GetIPList(void *data, char *requestedHostname, addr_t* addr, int 
   }
   else if (strcasecmp(requestedHostname, thread->dns_opt.host))
     return 0;
+  // BLAKE2b seed: never hand out a non-fork node, even for a bare hostname query.
+  requestedFlags |= NODE_BLAKE2B;
   thread->cacheHit(requestedFlags);
   auto& thisflag = thread->perflag[requestedFlags];
   unsigned int size = thisflag.cache.size();
