@@ -2,7 +2,8 @@
 #
 # deploy.sh -- Idempotent provisioning for a Bitcoin Knots BLAKE2b-fork DNS seeder.
 #
-# Target:  fresh Debian 12 (bookworm) VPS, Netcup "nano" class (1 vCPU / 2 GB RAM).
+# Target:  fresh Debian 13 (trixie) VPS, Netcup "nano" class (1 vCPU / 2 GB RAM).
+#          Built and verified on trixie; bookworm is expected to work, untested.
 # Source:  the repository this script ships in -- a fork of sipa/bitcoin-seeder with
 #          the BLAKE2b patch already applied as a commit. The script builds the
 #          sources sitting next to it; it does not clone or patch anything.
@@ -73,6 +74,13 @@ DNS_THREADS="${DNS_THREADS:-4}"
 # strictly necessary -- it keeps our bootstrap clean if either operator later
 # starts serving mixed SHA256d/BLAKE2b results.
 BOOTSTRAP_SEEDS="${BOOTSTRAP_SEEDS:-x10000009.dnsseed.bitcoin.dashjr-list-of-p2p-nodes.us x10000009.seed.bitcoin.haf.ovh}"
+
+# Optional. A healthchecks.io (or compatible) ping URL. When set, this script
+# installs a systemd timer that checks the seeder every 5 minutes and pings
+# this URL. If the host dies the pings stop and the alarm is raised remotely --
+# which is why it catches failures a monitor running ON this host cannot.
+# Leave unset to install the scripts without the timer.
+HEALTHCHECK_PING_URL="${HEALTHCHECK_PING_URL:-}"
 
 # ---------------------------------------------------------------------------
 # Fixed constants (not intended to be overridden).
@@ -330,7 +338,9 @@ apt-get install -y -qq --no-install-recommends \
     nftables \
     unattended-upgrades \
     apt-listchanges \
-    ca-certificates
+    ca-certificates \
+    curl \
+    bind9-dnsutils
 
 # ---------------------------------------------------------------------------
 # STEP 3 -- Unattended security upgrades, enabled non-interactively.
@@ -504,7 +514,128 @@ if [ "$unit_state" = "changed" ] && systemctl is-active --quiet dnsseed.service;
 fi
 
 # ---------------------------------------------------------------------------
-# STEP 9 -- Firewall.
+# STEP 9 -- Monitoring and alerting.
+#
+# Two read-only monitors ship in this directory. seed-status is an on-demand
+# snapshot the operator runs over SSH; seed-healthcheck is the dead-man's switch
+# body, run on a timer. Neither is required for the seeder to serve DNS, so a
+# missing script here warns and is skipped -- an absent optional monitor must
+# never abort a seeder deployment.
+# ---------------------------------------------------------------------------
+if [ -f "$SCRIPT_DIR/seed-healthcheck.sh" ]; then
+    log "installing health check script to /usr/local/bin/seed-healthcheck"
+    install -o root -g root -m 0755 "$SCRIPT_DIR/seed-healthcheck.sh" "/usr/local/bin/seed-healthcheck"
+else
+    warn "'$SCRIPT_DIR/seed-healthcheck.sh' not found; skipping the health check script"
+fi
+
+if [ -f "$SCRIPT_DIR/seed-status.sh" ]; then
+    log "installing status script to /usr/local/sbin/seed-status"
+    install -o root -g root -m 0750 "$SCRIPT_DIR/seed-status.sh" "/usr/local/sbin/seed-status"
+else
+    warn "'$SCRIPT_DIR/seed-status.sh' not found; skipping the status script"
+fi
+
+HEALTHCHECK_CONFIGURED=0
+if [ -n "$HEALTHCHECK_PING_URL" ]; then
+    # The ping URL is a credential in transit: anyone who observes it can forge
+    # liveness pings. Plain HTTP is refused rather than downgraded silently.
+    case "$HEALTHCHECK_PING_URL" in
+        https://*) : ;;
+        *) die "HEALTHCHECK_PING_URL='$HEALTHCHECK_PING_URL' must start with https://.
+       The ping URL is a credential in transit -- anyone who can read it can send
+       fake liveness pings and suppress a real alert -- so plain HTTP is refused." ;;
+    esac
+
+    # 0600 root-only: anyone holding the ping URL can send fake liveness pings and
+    # suppress a real alert, so it stays out of the world-readable unit file and
+    # lives here instead.
+    mk_tmp; tmp="$TMPF"
+    # SEED_HOST must be passed through too. The health check queries it to prove
+    # the daemon is really answering, and its built-in default is this project's
+    # own hostname -- so without this line every operator using their own domain
+    # would get a permanent, entirely false "returned no records" alert.
+    cat > "$tmp" <<EOF
+PING_URL=$HEALTHCHECK_PING_URL
+SEED_HOST=$SEED_HOST
+EOF
+    if [ "$(write_if_changed "$tmp" "/etc/default/seed-healthcheck" 0600)" = "changed" ]; then
+        log "wrote /etc/default/seed-healthcheck (mode 0600, root only)"
+    else
+        log "/etc/default/seed-healthcheck already correct"
+    fi
+
+    mk_tmp; tmp="$TMPF"
+    cat > "$tmp" <<'EOF'
+[Unit]
+Description=BLAKE2b DNS seeder health check (dead-man's switch)
+After=network-online.target dnsseed.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/default/seed-healthcheck
+ExecStart=/usr/local/bin/seed-healthcheck
+# Read-only monitor: it must never be able to change the thing it watches.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+LockPersonality=true
+EOF
+    if [ "$(write_if_changed "$tmp" "/etc/systemd/system/seed-healthcheck.service" 0644)" = "changed" ]; then
+        log "wrote /etc/systemd/system/seed-healthcheck.service"
+    else
+        log "/etc/systemd/system/seed-healthcheck.service already correct"
+    fi
+
+    mk_tmp; tmp="$TMPF"
+    cat > "$tmp" <<'EOF'
+[Unit]
+Description=Run BLAKE2b seeder health check every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+EOF
+    if [ "$(write_if_changed "$tmp" "/etc/systemd/system/seed-healthcheck.timer" 0644)" = "changed" ]; then
+        log "wrote /etc/systemd/system/seed-healthcheck.timer"
+    else
+        log "/etc/systemd/system/seed-healthcheck.timer already correct"
+    fi
+
+    systemctl daemon-reload
+    # A failure here must not abort the run: the firewall step below has not
+    # happened yet, and leaving a box unfirewalled because a monitor timer would
+    # not enable is a far worse outcome than an un-enabled timer.
+    if systemctl enable --now seed-healthcheck.timer >/dev/null 2>&1; then
+        HEALTHCHECK_CONFIGURED=1
+        log "health check timer enabled (runs 2 minutes after boot, then every 5 minutes)"
+    else
+        warn "could not enable the seed-healthcheck timer; check 'systemctl status seed-healthcheck.timer'"
+    fi
+
+    log "IMPORTANT: in your healthchecks.io check settings, set Period = 5 minutes and"
+    log "Grace = 15 minutes. The service default is a period of 1 day, so left alone a"
+    log "dead host would not raise an alert for over a day."
+else
+    if [ -f "/etc/systemd/system/seed-healthcheck.timer" ]; then
+        warn "HEALTHCHECK_PING_URL is unset but /etc/systemd/system/seed-healthcheck.timer
+         already exists; the previously configured timer is left running untouched."
+    fi
+    log "monitoring scripts installed, but no alerting timer was configured."
+    log "To add it later, re-run with a ping URL:"
+    log "  HEALTHCHECK_PING_URL=https://hc-ping.com/your-uuid ./deploy/deploy.sh"
+fi
+
+# ---------------------------------------------------------------------------
+# STEP 10 -- Firewall.
 #
 # HIGHEST-RISK STEP. The ruleset is default-drop on input, so a syntax error
 # loaded live over SSH would lock the operator out permanently. The candidate is
@@ -639,8 +770,27 @@ nft -f "$NFT_CONF"
 systemctl enable --now nftables >/dev/null
 
 # ---------------------------------------------------------------------------
-# STEP 10 -- Operator instructions.
+# STEP 11 -- Operator instructions.
 # ---------------------------------------------------------------------------
+
+# Built before the heredoc below rather than branched inside it, so the NEXT
+# STEPS block stays one contiguous piece of text in the operator's terminal.
+if [ "$HEALTHCHECK_CONFIGURED" -eq 1 ]; then
+    ALERTING_NOTE="The dead-man's switch is ACTIVE: this host checks itself every 5 minutes and
+   pings your healthchecks.io URL. If the host dies the pings stop and the alarm
+   is raised remotely.
+
+   Set Period = 5 minutes and Grace = 15 minutes in that check's settings. The
+   service default is a period of 1 day, so a dead server would otherwise go
+   unreported for over a day."
+else
+    ALERTING_NOTE="No alerting is active. The monitoring scripts are installed, but nothing
+   will tell you if this host dies. To add the dead-man's switch, create a free
+   check at healthchecks.io, copy its ping URL, and re-run (re-running is safe):
+
+        HEALTHCHECK_PING_URL=https://hc-ping.com/your-uuid ./deploy/deploy.sh"
+fi
+
 cat <<EOF
 
 ========================= NEXT STEPS =========================
@@ -701,6 +851,16 @@ It cannot answer anything until DNS delegation exists, so do these first.
    builds use W+X JIT pages) -- running 'systemctl daemon-reload' between
    attempts, so you learn which one is responsible instead of dropping all
    hardening at once.
+
+6) For a snapshot of how the seed is doing, run over SSH:
+
+        seed-status
+
+   (installed at /usr/local/sbin/seed-status) -- service state, peer counts,
+   BLAKE2b reachability, client versions, uptime trend, live DNS answer counts
+   and host resources. It is read-only and changes nothing.
+
+7) $ALERTING_NOTE
 
 ==============================================================
 EOF

@@ -1,7 +1,7 @@
 # blake2b-seeder
 
 A DNS seed for the Bitcoin Knots BLAKE2b hardfork, plus a deploy script that sets
-one up on a fresh Debian 12 server in a single command.
+one up on a fresh Debian 13 server in a single command.
 
 ---
 
@@ -87,8 +87,9 @@ You will need:
   records for it at your registrar or DNS provider. If your provider's control
   panel does not let you create NS records on a subdomain, you cannot run a seed
   there — most do.
-- **Debian 12 (bookworm)**, which is what the deploy script targets and is tested
-  against. It will probably work on Ubuntu, but nobody has checked.
+- **Debian 13 (trixie)**, which is what the deploy script has been built and
+  verified on. It is expected to work on Debian 12 (bookworm) as well, but that
+  is untested. It will probably work on Ubuntu, but nobody has checked.
 
 The resource requirements are small. A cheap 1 vCPU / 2 GB instance is plenty.
 
@@ -114,7 +115,7 @@ Use a VPS. They cost a few pounds a month, and that separation is the point.
 
 ## Installing
 
-On a fresh Debian 12 server, as root or with sudo:
+On a fresh Debian 13 server, as root or with sudo:
 
 ```
 apt-get update && apt-get install -y git
@@ -149,6 +150,7 @@ Every setting is an environment variable you put in front of the command.
 | `CRAWLER_THREADS` | `48` | Number of peer-crawling threads (`dnsseed -t`). They spend nearly all their time waiting on network timeouts rather than using CPU, so this can be higher than the core count. Upstream defaults to 96, which is tuned for the large machines the long-standing Bitcoin seeds run on; 48 is a conservative choice for a small VPS. |
 | `DNS_THREADS` | `4` | Number of threads answering DNS queries (`dnsseed -d`). Four is ample — they only parse and reply to small UDP packets. |
 | `BOOTSTRAP_SEEDS` | `x10000009.dnsseed.bitcoin.dashjr-list-of-p2p-nodes.us x10000009.seed.bitcoin.haf.ovh` | Space-separated list of existing seeds the crawler starts from. Not optional: the upstream compiled-in list is all non-fork seeds, so without this the crawler warms up on the wrong chain. |
+| `HEALTHCHECK_PING_URL` | *(unset)* | A healthchecks.io (or compatible) ping URL. When set, the script installs a systemd timer that checks the seeder every five minutes and pings this URL, so the *absence* of pings is what raises the alarm remotely. Must start with `https://`. Left unset, the monitoring scripts are still installed but no alerting timer is configured. |
 
 **Read this bit twice:** `SEED_HOST` and `NS_HOST` default to *someone else's
 domain*. They are there as a worked example of the shape the two names should
@@ -260,6 +262,90 @@ An empty or very small response in the first minutes after starting is **normal
 and expected**. It is not a sign that anything is broken. Leave it running
 overnight and check again the next day. Only start investigating if it is still
 returning nothing after many hours.
+
+---
+
+## Monitoring your seed
+
+A seed that has quietly stopped working is worse than no seed at all: it stays in
+people's configuration, it stays in lists, and it hands out nothing. Two small
+scripts ship in `deploy/` to make that situation visible. Both are installed by
+the deploy script.
+
+### A snapshot, on demand
+
+`seed-status` gives you the state of the whole thing in one screen. SSH in and
+run:
+
+```
+sudo seed-status
+```
+
+It reports the service state, peer counts, whether any BLAKE2b nodes are
+reachable, the client versions it has seen, the uptime trend, how many records
+the seed is actually answering with right now, and the host's own CPU, memory
+and disk. It is read-only — it reads state and changes nothing.
+
+### The dead-man's switch, and why it is inside out
+
+A monitor running on the seed host cannot tell you that the host died, because it
+died too. That is not a detail to be engineered around; it is the whole problem.
+So the check is inverted: the host pings out to a remote service on a schedule,
+and the **silence** is the alarm. Nothing on your machine has to survive the
+failure in order to report it — which is precisely what makes it able to catch
+the failure it exists to watch for.
+
+To enable it, sign up for a free account at <https://healthchecks.io>, create a
+check, copy its ping URL, and re-run the deploy script with that URL set:
+
+```
+HEALTHCHECK_PING_URL=https://hc-ping.com/your-uuid ./deploy/deploy.sh
+```
+
+Pass the same `CONTACT_EMAIL`, `SEED_HOST` and `NS_HOST` you used the first time
+alongside it — the script re-validates them on every run, and it has no memory of
+what you gave it before:
+
+```
+sudo CONTACT_EMAIL=you@example.com \
+     SEED_HOST=seed.yourdomain.org \
+     NS_HOST=ns-seed.yourdomain.org \
+     HEALTHCHECK_PING_URL=https://hc-ping.com/your-uuid \
+     ./deploy/deploy.sh
+```
+
+Re-running is safe. Every step checks the current state first, so an existing,
+working seed is left alone and only the monitoring pieces are added.
+
+**Then change two settings on the check itself: set Period to 5 minutes and Grace
+to 15 minutes.** The default period is one day, so if you leave it alone a dead
+server will not raise an alert for over a day — which defeats the point of
+checking every five minutes.
+
+What the switch catches:
+
+- The host is dead, or its network has been cut — the pings simply stop.
+- The service has stopped or failed to restart.
+- The service is running, but has not updated its peer database for hours.
+- The service is running, but is answering with no DNS records at all.
+- The service is running and answering, but knows of no reachable BLAKE2b nodes
+  — every process green, and the seed still useless.
+
+### It never repairs anything
+
+The monitor deliberately does not restart the seeder, clear its state, or fix
+anything else. A monitor that quietly repairs faults hides the problem it exists
+to report: the alert never fires, the underlying cause is never found, and you
+learn about it only when the self-repair eventually stops working. Its job is to
+tell you, and then stop.
+
+### Do not lower the staleness threshold
+
+The health check treats the peer database as stale after **2 hours**. That looks
+generous, and it is deliberate. The seeder's dump interval backs off by doubling
+— see `ThreadDumper()` in `main.cpp` — and settles at 3200 seconds, which is 53
+minutes, permanently. A threshold below that produces false alarms forever, and
+an alert you learn to ignore is not an alert.
 
 ---
 
@@ -396,7 +482,8 @@ sudo journalctl -u dnsseed -n 100 --no-pager
 
 **It exits immediately with no output from the seeder itself.** The systemd unit
 is aggressively hardened, and one of the sandboxing directives is the likely
-cause. The one most likely to conflict on Debian 12 is:
+cause. The one most likely to conflict, depending on how your OpenSSL was built,
+is:
 
 ```
 MemoryDenyWriteExecute=true
