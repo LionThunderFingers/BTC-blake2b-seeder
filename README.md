@@ -351,6 +351,42 @@ manually, and that alone adds real resilience.
 
 ## Troubleshooting
 
+**Never run `dnsseed --help`.** It does not print help — it starts the crawler.
+
+This is a bug inherited from upstream, not something this fork introduced. In the
+option table, `--help` is mapped to the same short option as `-h <host>`, so
+`--help` is parsed as "set the hostname", with no value attached. The usage text
+is never shown, the check that would have caught the missing hostname does not
+fire, and the daemon starts up instead. If you have already installed the systemd
+service, you now have a second, unmanaged crawler running as whichever user you
+typed the command as.
+
+If you did this, stop it with:
+
+```
+sudo pkill -f /usr/local/bin/dnsseed
+sudo systemctl restart dnsseed
+```
+
+**There is no invocation of this binary that prints help and then stops.** Running
+it bare does not either — with no hostname and no nameserver set, the check that
+would trigger the usage text never fires, and it starts crawling. Even when the
+usage text *is* printed, the code only prints it and carries on into startup; it
+never exits. So `dnsseed`, `dnsseed --help` and `dnsseed -Z` all end up running a
+crawler.
+
+Every option is documented in this README, so you should not need to ask the
+binary. If you want to see its built-in text anyway, put a time limit on it and
+run it somewhere disposable so its state files do not land in your home
+directory:
+
+```
+cd "$(mktemp -d)" && timeout 2 dnsseed -Z 2>&1 | head -30
+```
+
+The invalid `-Z` triggers the usage text and `timeout` kills the crawler two
+seconds later. This does not disturb an already-running `dnsseed` service.
+
 **The service will not start.** Look at the journal first — it almost always says
 exactly what happened:
 
