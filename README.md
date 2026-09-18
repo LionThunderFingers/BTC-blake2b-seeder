@@ -119,7 +119,7 @@ On a fresh Debian 13 server, as root or with sudo:
 
 ```
 apt-get update && apt-get install -y git
-git clone https://github.com/LionThunderFingers/blake2b-seeder.git
+git clone https://github.com/LionThunderFingers/BTC-blake2b-seeder.git
 cd blake2b-seeder
 sudo CONTACT_EMAIL=you@example.com ./deploy/deploy.sh
 ```
