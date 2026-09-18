@@ -12,7 +12,7 @@
 #
 # Usage (from the root of the checkout):
 #   sudo CONTACT_EMAIL=you@example.com ./deploy/deploy.sh
-#   sudo CONTACT_EMAIL=you@example.com PUBLIC_IP=203.0.113.10 THREADS=2 ./deploy/deploy.sh
+#   sudo CONTACT_EMAIL=you@example.com PUBLIC_IP=203.0.113.10 CRAWLER_THREADS=24 ./deploy/deploy.sh
 #
 set -euo pipefail
 
@@ -42,9 +42,21 @@ PUBLIC_IP="${PUBLIC_IP:-}"
 # Unprivileged system account the daemon runs as.
 SEED_USER="${SEED_USER:-dnsseed}"
 
-# Crawler thread count (dnsseed -d). 4 is comfortable on 1 vCPU because the
-# threads are almost entirely blocked on network I/O, not CPU.
-THREADS="${THREADS:-4}"
+# Crawler thread count (dnsseed -t). NOTE the flag: -t is crawlers, -d is DNS
+# server threads. Upstream defaults are -t 96 and -d 4.
+#
+# 96 crawlers is tuned for the large, well-resourced boxes the long-standing
+# Bitcoin seeds run on. The threads are almost entirely blocked on connect()
+# timeouts rather than burning CPU, so a high count is not as expensive as it
+# looks, but 96 pthread stacks on a 1 vCPU / 2 GB VPS is more than this job
+# needs for a network whose node count is still small. 48 is a deliberately
+# conservative default, not a measured optimum -- raise it if the box is idle
+# and the crawl is keeping up poorly.
+CRAWLER_THREADS="${CRAWLER_THREADS:-48}"
+
+# DNS server threads (dnsseed -d). Upstream default is 4, which is ample: these
+# only parse and answer small UDP queries.
+DNS_THREADS="${DNS_THREADS:-4}"
 
 # Bootstrap seeds the crawler starts from (dnsseed -s), space separated.
 #
@@ -201,11 +213,19 @@ if ! printf '%s' "$CONTACT_EMAIL" | grep -Eq '^[A-Za-z0-9._%+-]+@[A-Za-z0-9]([A-
     die "CONTACT_EMAIL='$CONTACT_EMAIL' does not look like an email address (expected user@domain.tld)"
 fi
 
-case "$THREADS" in
-    ''|*[!0-9]*) die "THREADS='$THREADS' must be a positive integer" ;;
+# dnsseed itself silently ignores an out-of-range -t/-d (it only assigns when
+# 0 < n < 1000), so validate here where we can actually tell the operator.
+case "$CRAWLER_THREADS" in
+    ''|*[!0-9]*) die "CRAWLER_THREADS='$CRAWLER_THREADS' must be a positive integer" ;;
 esac
-[ "$THREADS" -ge 1 ] || die "THREADS='$THREADS' must be at least 1"
-[ "$THREADS" -le 64 ] || die "THREADS='$THREADS' is implausibly high for a 1 vCPU / 2 GB host"
+[ "$CRAWLER_THREADS" -ge 1 ]   || die "CRAWLER_THREADS='$CRAWLER_THREADS' must be at least 1"
+[ "$CRAWLER_THREADS" -le 256 ] || die "CRAWLER_THREADS='$CRAWLER_THREADS' is implausibly high for a 1 vCPU / 2 GB host"
+
+case "$DNS_THREADS" in
+    ''|*[!0-9]*) die "DNS_THREADS='$DNS_THREADS' must be a positive integer" ;;
+esac
+[ "$DNS_THREADS" -ge 1 ]  || die "DNS_THREADS='$DNS_THREADS' must be at least 1"
+[ "$DNS_THREADS" -le 32 ] || die "DNS_THREADS='$DNS_THREADS' is implausibly high; these only answer small UDP queries"
 
 is_valid_hostname "$SEED_HOST" || die "SEED_HOST='$SEED_HOST' is not a valid fully-qualified hostname"
 is_valid_hostname "$NS_HOST"   || die "NS_HOST='$NS_HOST' is not a valid fully-qualified hostname"
@@ -287,7 +307,8 @@ cat <<EOF
   CONTACT_EMAIL  : $CONTACT_EMAIL
   PUBLIC_IP      : $PUBLIC_IP
   SEED_USER      : $SEED_USER
-  THREADS        : $THREADS
+  CRAWLER_THREADS: $CRAWLER_THREADS
+  DNS_THREADS    : $DNS_THREADS
   REPO_ROOT      : $REPO_ROOT
   BUILD_DIR      : $BUILD_DIR
 ========================================================
@@ -429,7 +450,7 @@ Type=simple
 User=$SEED_USER
 Group=$SEED_USER
 WorkingDirectory=$STATE_DIR
-ExecStart="$BIN_PATH" -h "$SEED_HOST" -n "$NS_HOST" -m "$CONTACT_EMAIL" -p 53 -a "$PUBLIC_IP" -d "$THREADS"$SEED_FLAGS
+ExecStart="$BIN_PATH" -h "$SEED_HOST" -n "$NS_HOST" -m "$CONTACT_EMAIL" -p 53 -a "$PUBLIC_IP" -t "$CRAWLER_THREADS" -d "$DNS_THREADS"$SEED_FLAGS
 Restart=always
 RestartSec=10
 

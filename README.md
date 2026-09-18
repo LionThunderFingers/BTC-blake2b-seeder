@@ -146,7 +146,8 @@ Every setting is an environment variable you put in front of the command.
 | `NS_HOST` | `ns-seed.thelionpool.org` | The nameserver name that `SEED_HOST` is delegated to. Must be different from `SEED_HOST`. **You must override this.** |
 | `PUBLIC_IP` | auto-detected | The public IPv4 address the seeder binds to and advertises. Detected from the kernel routing table when unset. The script refuses to proceed if the detected address is private or otherwise not globally routable. |
 | `SEED_USER` | `dnsseed` | The unprivileged system account the daemon runs as. |
-| `THREADS` | `4` | Number of crawler threads. Four is comfortable on a single vCPU because the threads spend nearly all their time waiting on the network rather than using CPU. |
+| `CRAWLER_THREADS` | `48` | Number of peer-crawling threads (`dnsseed -t`). They spend nearly all their time waiting on network timeouts rather than using CPU, so this can be higher than the core count. Upstream defaults to 96, which is tuned for the large machines the long-standing Bitcoin seeds run on; 48 is a conservative choice for a small VPS. |
+| `DNS_THREADS` | `4` | Number of threads answering DNS queries (`dnsseed -d`). Four is ample — they only parse and reply to small UDP packets. |
 | `BOOTSTRAP_SEEDS` | `x10000009.dnsseed.bitcoin.dashjr-list-of-p2p-nodes.us x10000009.seed.bitcoin.haf.ovh` | Space-separated list of existing seeds the crawler starts from. Not optional: the upstream compiled-in list is all non-fork seeds, so without this the crawler warms up on the wrong chain. |
 
 **Read this bit twice:** `SEED_HOST` and `NS_HOST` default to *someone else's
