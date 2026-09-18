@@ -324,7 +324,7 @@ apt-get update -qq
 log "installing build and runtime dependencies"
 apt-get install -y -qq --no-install-recommends \
     build-essential \
-    libboost-all-dev \
+    libboost-dev \
     libssl-dev \
     rsync \
     nftables \
