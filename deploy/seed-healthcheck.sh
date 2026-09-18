@@ -22,10 +22,24 @@ SERVICE="dnsseed"
 DUMP="/var/lib/dnsseed/dnsseed.dump"
 SEED_HOST="${SEED_HOST:-seed.thelionpool.org}"
 
-# Max age of dnsseed.dump before we call it stale. The daemon rewrites it
-# every few minutes; 30 minutes without a write means it has stopped working
-# even if the process is technically still alive.
-MAX_DUMP_AGE=1800
+# Max age of dnsseed.dump before we call it stale.
+#
+# Do NOT lower this without reading ThreadDumper() in main.cpp. The dump
+# interval BACKS OFF by doubling and then stays there forever:
+#
+#     Sleep(100000 << count);  // 100s, 200s, 400s, 800s, 1600s, then 3200s forever
+#
+# So in steady state the file is rewritten only every 3200s (53 minutes).
+# Anything below that guarantees a permanent false alarm once the seeder has
+# been up for an hour or so. 7200s allows one whole missed cycle plus margin.
+#
+# This is a backstop for "process alive but wedged". A real outage is caught
+# far faster by the service check and the live DNS query below, so the slow
+# threshold here costs nothing in detection time for the cases that matter.
+#
+# Overridable so the staleness branch can actually be exercised on a healthy
+# host: MAX_DUMP_AGE=1 seed-healthcheck should report a fault and exit 1.
+MAX_DUMP_AGE="${MAX_DUMP_AGE:-7200}"
 
 [ -n "$PING_URL" ] || { echo "PING_URL not set" >&2; exit 1; }
 

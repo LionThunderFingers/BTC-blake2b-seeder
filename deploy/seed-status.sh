@@ -25,7 +25,10 @@ SEED_HOST="${SEED_HOST:-seed.thelionpool.org}"
 
 set -uo pipefail   # deliberately NOT -e: a status tool must finish the report
 
-STALE_SECS=1800
+# Steady-state dump interval is 3200s: ThreadDumper() in main.cpp backs off by
+# doubling (100s, 200s, ... 1600s) and then stays at 3200s forever. A threshold
+# below that false-alarms permanently once the seeder has been up an hour.
+STALE_SECS=7200
 status_fail=0
 
 # ---------------------------------------------------------------- colour ----
@@ -131,7 +134,7 @@ fi
 # ========================================================= B. PEERS =========
 hdr "B. PEERS"
 if ! file_ready "$DUMP"; then
-    # A missing/empty dump is by definition not "fresher than 30 minutes",
+    # A missing/empty dump is by definition not fresh,
     # so it must fail the documented exit-code contract just like a stale one.
     status_fail=1
     printf '  %sdump not available yet (%s missing or empty)%s\n' "$C_YELLOW" "$DUMP" "$C_RESET"
