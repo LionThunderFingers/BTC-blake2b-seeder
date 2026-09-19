@@ -1,7 +1,23 @@
-# blake2b-seeder
+# BTC-blake2b-seeder
 
 A DNS seed for the Bitcoin Knots BLAKE2b hardfork, plus a deploy script that sets
 one up on a fresh Debian 13 server in a single command.
+
+> ### This is derived work
+>
+> **The crawler in this repository was written by Pieter Wuille and the
+> [bitcoin-seeder](https://github.com/sipa/bitcoin-seeder) contributors, not by me.**
+>
+> This repository carries their full commit history, which is why GitHub lists
+> sipa, luke-jr, jonasschnelli, petertodd and others as contributors here — those
+> are the people who actually wrote it. GitHub does not display a "forked from"
+> banner because the history was pushed into a fresh repository rather than
+> created with the fork button, so this notice takes its place.
+>
+> My own contribution is **8 lines across 2 files** (BLAKE2b support), plus the
+> `deploy/` directory and this README. See
+> [What this repository is](#what-this-repository-is) for how to verify that
+> yourself against upstream.
 
 ---
 
