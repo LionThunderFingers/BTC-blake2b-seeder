@@ -31,6 +31,40 @@ can do in an afternoon.
 
 ---
 
+### Checking that for yourself
+
+You do not have to take "effectively one seed" on trust, and the obvious way of
+checking it is misleading. A single DNS reply can only carry around 25 addresses
+before it runs into the 512-byte limit on a UDP DNS packet, so counting what one
+query returns tells you almost nothing about how much a seed knows — every
+healthy seed looks roughly the same size.
+
+Asking repeatedly is what separates them. A live crawler holds a large database
+and hands out a different random subset each time, so distinct addresses keep
+accumulating. A fixed, hand-maintained list returns exactly the same addresses
+every time, and the count stops dead.
+
+```
+for i in $(seq 1 15); do dig +short x10000009.<seed hostname>; sleep 0.4; done \
+  | sort -u | wc -l
+```
+
+Measured on 2026-09-18, 15 queries each:
+
+| Seed | Per reply | Distinct over 15 replies |
+| --- | --- | --- |
+| `seed.thelionpool.org` | 24 | **46** |
+| `dnsseed.bitcoin.dashjr-list-of-p2p-nodes.us` | 22 | 22 |
+| `seed.bitcoin.haf.ovh` | 25 | 25 |
+
+The two long-standing seeds returned an identical set every single time. They
+are curated lists, which is a perfectly reasonable thing to run — Luke's
+hostname says as much — but a list only stays accurate while somebody maintains
+it by hand, and it cannot notice a node going away. That is the gap another
+crawler fills.
+
+---
+
 ## What this repository is
 
 This is a fork of [sipa/bitcoin-seeder](https://github.com/sipa/bitcoin-seeder),
