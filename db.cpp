@@ -36,22 +36,7 @@ void CAddrInfo::Update(bool good) {
 bool CAddrDb::Get_(CServiceResult &ip, int &wait) {
   int64 now = time(NULL);
   int cont = 0;
-  // Cap discovery at half the crawl budget.
-  // This chain shares its port with a much larger network, so address gossip
-  // delivers an effectively unbounded stream of never-tried addresses. If
-  // discovery is allowed to dominate the crawl budget, already-known nodes are
-  // not re-polled often enough: stat2H has tau=2h and IsGood() requires
-  // count > 2, so a node must be re-polled roughly every 83 minutes or its
-  // stat2H.count decays below the threshold and it stops being served even
-  // though it is perfectly reachable. Weighting never-tried addresses at no
-  // more than the number of known nodes bounds them to at most half of tot.
-  // Cold-start exception: when nothing is known yet (ourId empty) use the full
-  // never-tried pool, otherwise a fresh seeder could never crawl its bootstrap
-  // addresses.
-  int nUnk = static_cast<int>(unkId.size());
-  int nOur = static_cast<int>(ourId.size());
-  int unkWeight = (nOur == 0) ? nUnk : (nUnk < nOur ? nUnk : nOur);
-  int tot = unkWeight + nOur;
+  int tot = unkId.size() + ourId.size();
   if (tot == 0) {
     wait = 5;
     return false;
@@ -93,7 +78,7 @@ bool CAddrDb::Get_(CServiceResult &ip, int &wait) {
       }
     }
     int rnd = rand() % tot;
-    if (rnd < unkWeight) {
+    if (rnd < unkId.size()) {
       set<int>::iterator it = unkId.end(); it--;
       ret = *it;
       unkId.erase(it);
