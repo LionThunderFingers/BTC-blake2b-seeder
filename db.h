@@ -243,6 +243,18 @@ public:
       }
   }
   
+  // Diagnostic: the relative sizes of these three sets determine how the crawl
+  // budget is split in Get_(), and nothing else reports them. Without this the
+  // split can only be inferred, and inferring it has already produced two wrong
+  // diagnoses.
+  void GetSetSizes(size_t &unk, size_t &our, size_t &good) {
+    SHARED_CRITICAL_BLOCK(cs) {
+      unk = unkId.size();
+      our = ourId.size();
+      good = goodId.size();
+    }
+  }
+
   std::vector<CAddrReport> GetAll() {
     std::vector<CAddrReport> ret;
     SHARED_CRITICAL_BLOCK(cs) {

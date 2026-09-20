@@ -433,6 +433,16 @@ extern "C" void* ThreadDumper(void*) {
         stat[4] += rep.uptime[4];
       }
       fclose(d);
+      {
+        size_t nUnk = 0, nOur = 0, nGood = 0;
+        db.GetSetSizes(nUnk, nOur, nGood);
+        FILE *fsz = fopen("dnssets.log", "a");
+        if (fsz) {
+          fprintf(fsz, "%llu %llu %llu %llu\n", (unsigned long long)(time(NULL)),
+                  (unsigned long long)nUnk, (unsigned long long)nOur, (unsigned long long)nGood);
+          fclose(fsz);
+        }
+      }
       FILE *ff = fopen("dnsstats.log", "a");
       fprintf(ff, "%llu %g %g %g %g %g\n", (unsigned long long)(time(NULL)), stat[0], stat[1], stat[2], stat[3], stat[4]);
       fclose(ff);
