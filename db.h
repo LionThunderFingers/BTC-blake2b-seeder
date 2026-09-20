@@ -12,6 +12,15 @@
 
 #define MIN_RETRY 1000
 
+// Percentage of the crawl budget reserved for nodes already known to advertise
+// NODE_BLAKE2B. At the measured ~31 crawl attempts/sec a 5% slice is ~1.5
+// attempts/sec spread over the ~395 known fork nodes, i.e. one poll per node
+// roughly every 4 minutes. MIN_RETRY (1000s) then floors the real interval at
+// about 17 minutes, comfortably inside the ~83 minutes that stat2H (tau=2h,
+// IsGood() requires count > 2) demands, and with enough headroom that the
+// interval stays inside that bound even if the fork grows several times over.
+#define FORK_CRAWL_PCT 5
+
 #define REQUIRE_VERSION 70001
 
 extern int nMinimumHeight;
@@ -210,6 +219,15 @@ private:
   std::deque<int> ourId; // sequence of tried nodes, in order we have tried connecting to them (c,d)
   std::set<int> unkId; // set of nodes not yet tried (b)
   std::set<int> goodId; // set of good nodes  (d, good e)
+  // Rotation queue of nodes known to advertise NODE_BLAKE2B. The fork shares
+  // port 8333 with the much larger SHA256d network, so gossip fills ourId with
+  // a quarter of a million addresses while only a few hundred are fork nodes.
+  // Rotating those independently keeps them polled often enough to stay
+  // IsGood(). This is a partition, not an overlay: a node rotates in exactly
+  // one of ourId and forkId, so the invariant "Get_ pops one id, the following
+  // Good_/Bad_/Skipped_ pushes one id back" still holds. Requeue_() is what
+  // routes an id to the right queue.
+  std::deque<int> forkId;
   int nDirty;
   
 protected:
@@ -221,6 +239,7 @@ protected:
   void Bad_(const CService &ip, int ban);  // mark an IP as bad (and optionally ban it) (must have been returned by Get_)
   void Skipped_(const CService &ip);       // mark an IP as skipped (must have been returned by Get_)
   int Lookup_(const CService &ip);         // look up id of an IP
+  void Requeue_(int id);                   // return an id to exactly one rotation queue (ourId or forkId)
   void GetIPs_(std::set<CNetAddr>& ips, uint64_t requestedFlags, int max, const bool *nets); // get a random set of IPs (shared lock only)
 
 public:
@@ -247,18 +266,32 @@ public:
   // budget is split in Get_(), and nothing else reports them. Without this the
   // split can only be inferred, and inferring it has already produced two wrong
   // diagnoses.
-  void GetSetSizes(size_t &unk, size_t &our, size_t &good) {
+  // fork is the size of the NODE_BLAKE2B rotation queue that takes a fixed
+  // FORK_CRAWL_PCT slice of that budget.
+  void GetSetSizes(size_t &unk, size_t &our, size_t &good, size_t &fork) {
     SHARED_CRITICAL_BLOCK(cs) {
       unk = unkId.size();
       our = ourId.size();
       good = goodId.size();
+      fork = forkId.size();
     }
   }
 
   std::vector<CAddrReport> GetAll() {
     std::vector<CAddrReport> ret;
     SHARED_CRITICAL_BLOCK(cs) {
+      // Both rotation queues must be walked. forkId is a partition of the tried
+      // nodes, not a subset of ourId: a node advertising NODE_BLAKE2B rotates in
+      // forkId *instead of* ourId (see Requeue_), so iterating ourId alone would
+      // silently drop every fork node from the census. Do not "tidy" this back
+      // into a single loop.
       for (std::deque<int>::const_iterator it = ourId.begin(); it != ourId.end(); it++) {
+        const CAddrInfo &info = idToInfo[*it];
+        if (info.success > 0) {
+          ret.push_back(info.GetReport());
+        }
+      }
+      for (std::deque<int>::const_iterator it = forkId.begin(); it != forkId.end(); it++) {
         const CAddrInfo &info = idToInfo[*it];
         if (info.success > 0) {
           ret.push_back(info.GetReport());
@@ -282,9 +315,20 @@ public:
     SHARED_CRITICAL_BLOCK(cs) {
       if (fWrite) {
         CAddrDb *db = const_cast<CAddrDb*>(this);
-        int n = ourId.size() + unkId.size();
+        // forkId is counted and written alongside ourId for the same reason
+        // GetAll() walks both: it is a partition of the tried nodes, not a
+        // subset of ourId, so omitting it would drop every fork node's
+        // accumulated CAddrStat history from the dump. The on-disk format is
+        // unchanged (n simply covers three containers instead of two); the read
+        // path restores these into ourId and they migrate back to forkId on
+        // their first successful crawl.
+        int n = ourId.size() + unkId.size() + forkId.size();
         READWRITE(n);
         for (std::deque<int>::const_iterator it = ourId.begin(); it != ourId.end(); it++) {
+          std::map<int, CAddrInfo>::iterator ci = db->idToInfo.find(*it);
+          READWRITE((*ci).second);
+        }
+        for (std::deque<int>::const_iterator it = forkId.begin(); it != forkId.end(); it++) {
           std::map<int, CAddrInfo>::iterator ci = db->idToInfo.find(*it);
           READWRITE((*ci).second);
         }

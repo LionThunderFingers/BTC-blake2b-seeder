@@ -1,5 +1,6 @@
 #include "db.h"
 #include <stdlib.h>
+#include <algorithm>
 
 using namespace std;
 
@@ -56,8 +57,42 @@ bool CAddrDb::Get_(CServiceResult &ip, int &wait) {
     return false;
   }
   do {
-    int rnd = rand() % tot;
     int ret;
+    // Fork-priority slice.
+    // Only a few hundred nodes advertise NODE_BLAKE2B, and they sit inside a
+    // quarter-million-entry ourId FIFO: a full ourId cycle takes ~2.3 hours,
+    // while stat2H (tau=2h, IsGood() requires count > 2) needs a poll roughly
+    // every 83 minutes. forkId rotates those nodes independently so they keep
+    // being served. See FORK_CRAWL_PCT in db.h for why the slice is 5%.
+    // forkId and ourId are a partition, not an overlay: a fork node rotates in
+    // forkId instead of ourId, so a pop here is still balanced by exactly one
+    // push in the Good_/Bad_/Skipped_ callback (see Requeue_).
+    if (!forkId.empty() && rand() % 100 < FORK_CRAWL_PCT) {
+      int forkRet = forkId.front();
+      forkId.pop_front();
+      // Guard before any idToInfo[] use: operator[] would default-construct a
+      // phantom entry for an id that Bad_() has already banned away.
+      if (idToInfo.count(forkRet) == 0) {
+        // Node was banned and its CAddrInfo erased; drop it and fall through.
+      } else if (now - idToInfo[forkRet].ourLastTry < MIN_RETRY) {
+        // Unlike the ourId path above, do not return false here. ourId is a
+        // strict FIFO, so its front being too recent means the whole queue is
+        // too recent; forkId is only a 5% slice, and throwing away the entire
+        // crawl slot because one fork node is not due yet would waste more
+        // budget than the starvation this queue exists to fix. Re-append and
+        // fall through to normal selection.
+        forkId.push_back(forkRet);
+      } else {
+        // Do not re-append here: the pop above is balanced by the Requeue_
+        // call in the mandatory Good_/Bad_/Skipped_ callback, exactly as the
+        // ourId path below is.
+        ret = forkRet;
+        ip.service = idToInfo[ret].ip;
+        ip.ourLastSuccess = idToInfo[ret].ourLastSuccess;
+        break;
+      }
+    }
+    int rnd = rand() % tot;
     if (rnd < unkWeight) {
       set<int>::iterator it = unkId.end(); it--;
       ret = *it;
@@ -86,6 +121,35 @@ int CAddrDb::Lookup_(const CService &ip) {
   return -1;
 }
 
+// Return an id to exactly one rotation queue, balancing the single pop that
+// Get_ performed. Fork nodes rotate in forkId, everything else in ourId.
+void CAddrDb::Requeue_(int id) {
+  std::map<int, CAddrInfo>::iterator it = idToInfo.find(id);
+  // success > 0 is what makes the service bits trustworthy. Add_() seeds
+  // services from ADDR gossip for addresses never crawled, so an address can
+  // claim NODE_BLAKE2B without anyone having reached it — and Bad_() requeues
+  // those too. Enrolling on the rumour alone let forkId fill with dead
+  // addresses (964 entries against a real population of 391, still climbing),
+  // diluting the priority slice it exists to protect. After a successful
+  // crawl the bits came from the peer's own VERSION via Good_(), so they can
+  // be trusted; Good_() calls Update(true) before requeuing, so a genuine
+  // fork node still enrols on its very first success.
+  if (it != idToInfo.end() && it->second.success > 0 &&
+      (it->second.services & NODE_BLAKE2B)) {
+    // Already queued means this crawl came from a leftover ourId entry for a
+    // node since enrolled in forkId. Dropping it here is how those stale
+    // duplicates drain away; forkId still holds the node, so it is not lost.
+    if (std::find(forkId.begin(), forkId.end(), id) == forkId.end())
+      forkId.push_back(id);
+  } else {
+    // Not a fork node — or, defensively, an id with no idToInfo entry. The
+    // latter cannot happen via today's callers (Good_/Bad_/Skipped_ all
+    // return early when Lookup_ fails), but is left here rather than
+    // asserted so a future caller degrades to ourId instead of crashing.
+    ourId.push_back(id);
+  }
+}
+
 void CAddrDb::Good_(const CService &addr, int clientV, std::string clientSV, int blocks, uint64_t services) {
   int id = Lookup_(addr);
   if (id == -1) return;
@@ -102,7 +166,7 @@ void CAddrDb::Good_(const CService &addr, int clientV, std::string clientSV, int
 //    printf("%s: good; %i good nodes now\n", ToString(addr).c_str(), (int)goodId.size());
   }
   nDirty++;
-  ourId.push_back(id);
+  Requeue_(id);
 }
 
 void CAddrDb::Bad_(const CService &addr, int ban)
@@ -124,12 +188,15 @@ void CAddrDb::Bad_(const CService &addr, int ban)
     ipToId.erase(info.ip);
     goodId.erase(id);
     idToInfo.erase(id);
+    // The CAddrInfo is gone, so this id must not stay selectable in the fork
+    // rotation queue.
+    forkId.erase(std::remove(forkId.begin(), forkId.end(), id), forkId.end());
   } else {
     if (/*!info.IsGood() && */ goodId.count(id)==1) {
       goodId.erase(id);
 //      printf("%s: not good; %i good nodes left\n", ToString(addr).c_str(), (int)goodId.size());
     }
-    ourId.push_back(id);
+    Requeue_(id);
   }
   nDirty++;
 }
@@ -139,7 +206,7 @@ void CAddrDb::Skipped_(const CService &addr)
   int id = Lookup_(addr);
   if (id == -1) return;
   unkId.erase(id);
-  ourId.push_back(id);
+  Requeue_(id);
 //  printf("%s: skipped\n", ToString(addr).c_str());
   nDirty++;
 }

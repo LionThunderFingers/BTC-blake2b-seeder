@@ -434,12 +434,13 @@ extern "C" void* ThreadDumper(void*) {
       }
       fclose(d);
       {
-        size_t nUnk = 0, nOur = 0, nGood = 0;
-        db.GetSetSizes(nUnk, nOur, nGood);
+        size_t nUnk = 0, nOur = 0, nGood = 0, nFork = 0;
+        db.GetSetSizes(nUnk, nOur, nGood, nFork);
         FILE *fsz = fopen("dnssets.log", "a");
         if (fsz) {
-          fprintf(fsz, "%llu %llu %llu %llu\n", (unsigned long long)(time(NULL)),
-                  (unsigned long long)nUnk, (unsigned long long)nOur, (unsigned long long)nGood);
+          fprintf(fsz, "%llu %llu %llu %llu %llu\n", (unsigned long long)(time(NULL)),
+                  (unsigned long long)nUnk, (unsigned long long)nOur,
+                  (unsigned long long)nGood, (unsigned long long)nFork);
           fclose(fsz);
         }
       }
