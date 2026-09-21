@@ -34,7 +34,8 @@ dig +short x10000009.seed.thelionpool.org
 ```
 
 Operating practices, current figures, and a write-up of an outage it had on
-2026-09-20 are documented at <https://thelionpool.org>. Contact:
+2026-09-20 are documented at
+<https://lionthunderfingers.github.io/B2B-Node-census/seed/>. Contact:
 knots.seed@gmail.com
 
 ---
