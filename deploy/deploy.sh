@@ -12,8 +12,13 @@
 # a config edit will rewrite only what actually changed.
 #
 # Usage (from the root of the checkout):
-#   sudo CONTACT_EMAIL=you@example.com ./deploy/deploy.sh
-#   sudo CONTACT_EMAIL=you@example.com PUBLIC_IP=203.0.113.10 CRAWLER_THREADS=24 ./deploy/deploy.sh
+#   sudo CONTACT_EMAIL=you@example.com \
+#        SEED_HOST=seed.yourdomain.org NS_HOST=ns-seed.yourdomain.org ./deploy/deploy.sh
+#
+#   ...and the same with optional overrides:
+#   sudo CONTACT_EMAIL=you@example.com \
+#        SEED_HOST=seed.yourdomain.org NS_HOST=ns-seed.yourdomain.org \
+#        PUBLIC_IP=203.0.113.10 CRAWLER_THREADS=24 ./deploy/deploy.sh
 #
 set -euo pipefail
 
@@ -23,12 +28,18 @@ set -euo pipefail
 
 # Hostname that answers with A/AAAA records for crawled peers. This is the name
 # users put in their bitcoin.conf as a -dnsseed / addnode source.
-SEED_HOST="${SEED_HOST:-seed.thelionpool.org}"
+# REQUIRED. There is deliberately no default -- see STEP 1. The '+' form (not
+# ':-') records whether the caller supplied the variable at all, so a supplied
+# empty string is distinguishable from an unset one. Both are safe under set -u.
+SEED_HOST_SUPPLIED="${SEED_HOST+yes}"
+SEED_HOST="${SEED_HOST-}"
 
 # The authoritative nameserver name for SEED_HOST. The registrar needs an A
 # record for this name (glue/host record) plus an NS record delegating
 # SEED_HOST to it. Must differ from SEED_HOST.
-NS_HOST="${NS_HOST:-ns-seed.thelionpool.org}"
+# REQUIRED, on the same terms as SEED_HOST.
+NS_HOST_SUPPLIED="${NS_HOST+yes}"
+NS_HOST="${NS_HOST-}"
 
 # REQUIRED. Embedded in the zone's SOA RNAME so abuse reports can reach you.
 # There is deliberately no default -- an unset value aborts the run.
@@ -234,6 +245,20 @@ case "$DNS_THREADS" in
 esac
 [ "$DNS_THREADS" -ge 1 ]  || die "DNS_THREADS='$DNS_THREADS' must be at least 1"
 [ "$DNS_THREADS" -le 32 ] || die "DNS_THREADS='$DNS_THREADS' is implausibly high; these only answer small UDP queries"
+
+if [ -z "$SEED_HOST_SUPPLIED" ] || [ -z "$SEED_HOST" ]; then
+    die "SEED_HOST is required and has no default.
+       It must be a hostname in a domain you control -- the seeder becomes
+       authoritative for it, and it is what users put in their bitcoin.conf.
+       Re-run as:  SEED_HOST=seed.yourdomain.org NS_HOST=ns-seed.yourdomain.org $0"
+fi
+
+if [ -z "$NS_HOST_SUPPLIED" ] || [ -z "$NS_HOST" ]; then
+    die "NS_HOST is required and has no default.
+       It is the nameserver name your registrar delegates SEED_HOST to, so it
+       must also be in a domain you control, and must differ from SEED_HOST.
+       Re-run as:  SEED_HOST=seed.yourdomain.org NS_HOST=ns-seed.yourdomain.org $0"
+fi
 
 is_valid_hostname "$SEED_HOST" || die "SEED_HOST='$SEED_HOST' is not a valid fully-qualified hostname"
 is_valid_hostname "$NS_HOST"   || die "NS_HOST='$NS_HOST' is not a valid fully-qualified hostname"

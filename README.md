@@ -189,8 +189,11 @@ On a fresh Debian 13 server, as root or with sudo:
 ```
 apt-get update && apt-get install -y git
 git clone https://github.com/LionThunderFingers/BTC-blake2b-seeder.git
-cd blake2b-seeder
-sudo CONTACT_EMAIL=you@example.com ./deploy/deploy.sh
+cd BTC-blake2b-seeder
+sudo CONTACT_EMAIL=you@example.com \
+     SEED_HOST=seed.yourdomain.org \
+     NS_HOST=ns-seed.yourdomain.org \
+     ./deploy/deploy.sh
 ```
 
 (The first line is only needed because minimal Debian images often ship without
@@ -212,8 +215,8 @@ Every setting is an environment variable you put in front of the command.
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `CONTACT_EMAIL` | *(none — required)* | Your email address. Published in the zone's SOA record so other operators can reach you about abuse or problems. There is deliberately no default; the script aborts without it. |
-| `SEED_HOST` | `seed.thelionpool.org` | The hostname people put in their configuration to use your seed. **You must override this.** |
-| `NS_HOST` | `ns-seed.thelionpool.org` | The nameserver name that `SEED_HOST` is delegated to. Must be different from `SEED_HOST`. **You must override this.** |
+| `SEED_HOST` | *(none — required)* | The hostname people put in their configuration to use your seed. Must be in a domain you control; the seeder becomes authoritative for it. The script aborts without it. |
+| `NS_HOST` | *(none — required)* | The nameserver name that `SEED_HOST` is delegated to. Must also be in a domain you control, and must differ from `SEED_HOST`. The script aborts without it. |
 | `PUBLIC_IP` | auto-detected | The public IPv4 address the seeder binds to and advertises. Detected from the kernel routing table when unset. The script refuses to proceed if the detected address is private or otherwise not globally routable. |
 | `SEED_USER` | `dnsseed` | The unprivileged system account the daemon runs as. |
 | `CRAWLER_THREADS` | `48` | Number of peer-crawling threads (`dnsseed -t`). They spend nearly all their time waiting on network timeouts rather than using CPU, so this can be higher than the core count. Upstream defaults to 96, which is tuned for the large machines the long-standing Bitcoin seeds run on; 48 is a conservative choice for a small VPS. |
@@ -221,12 +224,11 @@ Every setting is an environment variable you put in front of the command.
 | `BOOTSTRAP_SEEDS` | `x10000009.dnsseed.bitcoin.dashjr-list-of-p2p-nodes.us x10000009.seed.bitcoin.haf.ovh` | Space-separated list of existing seeds the crawler starts from. Not optional: the upstream compiled-in list is all non-fork seeds, so without this the crawler warms up on the wrong chain. |
 | `HEALTHCHECK_PING_URL` | *(unset)* | A healthchecks.io (or compatible) ping URL. When set, the script installs a systemd timer that checks the seeder every five minutes and pings this URL, so the *absence* of pings is what raises the alarm remotely. Must start with `https://`. Left unset, the monitoring scripts are still installed but no alerting timer is configured. |
 
-**Read this bit twice:** `SEED_HOST` and `NS_HOST` default to *someone else's
-domain*. They are there as a worked example of the shape the two names should
-take, not as something you should leave alone. If you run the script without
-overriding them you will end up with a daemon that is authoritative for a zone
-you do not own and that nobody will ever query. A realistic invocation looks
-like:
+`SEED_HOST` and `NS_HOST` have no defaults on purpose. Earlier versions defaulted
+them to this author's own live seed, which meant a run that skipped them produced
+a daemon authoritative for a zone the operator did not own and that nobody would
+ever query. The script now refuses to start unless both are supplied. A realistic
+invocation looks like:
 
 ```
 sudo CONTACT_EMAIL=you@example.com \
