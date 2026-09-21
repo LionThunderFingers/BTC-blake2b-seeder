@@ -14,10 +14,28 @@ one up on a fresh Debian 13 server in a single command.
 > banner because the history was pushed into a fresh repository rather than
 > created with the fork button, so this notice takes its place.
 >
-> My own contribution is **8 lines across 2 files** (BLAKE2b support), plus the
-> `deploy/` directory and this README. See
+> My own contribution to the crawler is **146 added and 6 removed lines across 4
+> files** — the BLAKE2b service bit and filtering, and a fork-node crawl priority
+> queue — plus the `deploy/` directory and this README. Check it with
+> `git diff upstream/master -- '*.cpp' '*.h'`, and see
 > [What this repository is](#what-this-repository-is) for how to verify that
 > yourself against upstream.
+
+---
+
+## There is a live instance
+
+`seed.thelionpool.org` runs this code, on a dedicated VPS in Germany, serving the
+BLAKE2b fork. It is **not in any Bitcoin Knots chainparams** and is operated
+independently, so nothing reaches it unless you point something at it yourself:
+
+```
+dig +short x10000009.seed.thelionpool.org
+```
+
+Operating practices, current figures, and a write-up of an outage it had on
+2026-09-20 are documented at <https://thelionpool.org>. Contact:
+knots.seed@gmail.com
 
 ---
 
