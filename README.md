@@ -74,29 +74,38 @@ before it runs into the 512-byte limit on a UDP DNS packet, so counting what one
 query returns tells you almost nothing about how much a seed knows — every
 healthy seed looks roughly the same size.
 
-Asking repeatedly is what separates them. A live crawler holds a large database
-and hands out a different random subset each time, so distinct addresses keep
-accumulating. A fixed, hand-maintained list returns exactly the same addresses
-every time, and the count stops dead.
+Asking repeatedly is what separates them — but only if the answers actually come
+from the seed. A live crawler holds a large database and hands out a different
+random subset each time, so distinct addresses keep accumulating. A fixed,
+hand-maintained list returns the same addresses every time, and the count stops
+dead.
+
+**The obvious way of testing this does not work.** Sending the same query fifteen
+times through a normal resolver measures your resolver's cache, not the seed. The
+first query reaches the seed; the other fourteen are replayed from cache until the
+TTL expires, and this seed's TTL is 3600 seconds. Under that test every seed looks
+like a static list, including this one.
+
+Ask the authoritative server directly, so nothing can cache in between:
 
 ```
-for i in $(seq 1 15); do dig +short x10000009.<seed hostname>; sleep 0.4; done \
-  | sort -u | wc -l
+for i in $(seq 1 15); do
+  dig @ns-seed.thelionpool.org +short x10000009.seed.thelionpool.org
+  sleep 0.4
+done | sort -u | wc -l
 ```
 
-Measured on 2026-09-18, 15 queries each:
+Measured that way on 2026-09-22, `seed.thelionpool.org` returns 24 addresses per
+reply and 87 to 102 distinct addresses over 15 consecutive queries. The figure
+moves between runs because each reply is a fresh random sample from the live
+database, and that variation is itself the evidence: a fixed list cannot produce
+it.
 
-| Seed | Per reply | Distinct over 15 replies |
-| --- | --- | --- |
-| `seed.thelionpool.org` | 24 | **46** |
-| `dnsseed.bitcoin.dashjr-list-of-p2p-nodes.us` | 22 | 22 |
-| `seed.bitcoin.haf.ovh` | 25 | 25 |
-
-The two long-standing seeds returned an identical set every single time. They
-are curated lists, which is a perfectly reasonable thing to run — Luke's
-hostname says as much — but a list only stays accurate while somebody maintains
-it by hand, and it cannot notice a node going away. That is the gap another
-crawler fills.
+An earlier version of this README put a three-seed comparison table here and
+concluded that the two long-standing seeds were static hand-maintained lists. That
+measurement was taken through a caching resolver, the conclusion did not survive
+re-testing, and it has been removed. Measure your own seed with the command above;
+characterising somebody else's from the outside takes more care than a `dig` loop.
 
 ---
 
