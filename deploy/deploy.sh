@@ -57,14 +57,13 @@ SEED_USER="${SEED_USER:-dnsseed}"
 # Crawler thread count (dnsseed -t). NOTE the flag: -t is crawlers, -d is DNS
 # server threads. Upstream defaults are -t 96 and -d 4.
 #
-# 96 crawlers is tuned for the large, well-resourced boxes the long-standing
-# Bitcoin seeds run on. The threads are almost entirely blocked on connect()
-# timeouts rather than burning CPU, so a high count is not as expensive as it
-# looks, but 96 pthread stacks on a 1 vCPU / 2 GB VPS is more than this job
-# needs for a network whose node count is still small. 48 is a deliberately
-# conservative default, not a measured optimum -- raise it if the box is idle
-# and the crawl is keeping up poorly.
-CRAWLER_THREADS="${CRAWLER_THREADS:-48}"
+# The crawler walks the whole Bitcoin network (a quarter of a million
+# addresses), not just the fork's few hundred nodes, and the threads spend
+# nearly all their time blocked on connect() timeouts to dead addresses rather
+# than using CPU. On the live seed 48 threads starved: 44 of 48 sat in SYN_SENT,
+# nodes were not re-polled often enough to stay "good", and the served set
+# collapsed. 160 fixed it on a 2 vCPU / 2 GB VPS at about 80 MB RSS.
+CRAWLER_THREADS="${CRAWLER_THREADS:-160}"
 
 # DNS server threads (dnsseed -d). Upstream default is 4, which is ample: these
 # only parse and answer small UDP queries.
