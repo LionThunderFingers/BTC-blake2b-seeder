@@ -1,0 +1,23 @@
+# Census pipeline (optional; deploy.sh does not install it).
+#   install -m 0755 deploy/seed-census.sh   /usr/local/bin/seed-census
+#   install -m 0755 deploy/seed-stable.py   /usr/local/bin/seed-stable
+#   install -m 0755 deploy/seed-publish.sh  /usr/local/bin/seed-publish
+#   install -m 0600 deploy/seed-publish.default.example /etc/default/seed-publish  (then edit)
+#   cp deploy/systemd/seed-*.{service,timer} /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now seed-census.timer seed-publish.timer
+[Unit]
+Description=Publish the newest census to the GitHub Pages site
+After=network-online.target seed-census.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/default/seed-publish
+ExecStart=/usr/local/bin/seed-publish
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/census-site
+ProtectHome=false
+PrivateTmp=true
+RestrictSUIDSGID=true
+LockPersonality=true

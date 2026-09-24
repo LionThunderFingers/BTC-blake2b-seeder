@@ -1,0 +1,19 @@
+# Census pipeline (optional; deploy.sh does not install it).
+#   install -m 0755 deploy/seed-census.sh   /usr/local/bin/seed-census
+#   install -m 0755 deploy/seed-stable.py   /usr/local/bin/seed-stable
+#   install -m 0755 deploy/seed-publish.sh  /usr/local/bin/seed-publish
+#   install -m 0600 deploy/seed-publish.default.example /etc/default/seed-publish  (then edit)
+#   cp deploy/systemd/seed-*.{service,timer} /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now seed-census.timer seed-publish.timer
+[Unit]
+Description=Publish the census hourly
+
+[Timer]
+# A few minutes after the census runs, so it publishes the fresh sample.
+OnBootSec=10min
+OnUnitActiveSec=1h
+AccuracySec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

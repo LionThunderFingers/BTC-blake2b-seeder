@@ -53,19 +53,33 @@ NR > 1 {
             gsub(/"/, "", ua)
             ver[ua]++
             if ($9 + 0 > maxh) maxh = $9 + 0
+            # hua[] is indexed by the SAME counter as h[], so height and
+            # user-agent stay aligned by construction rather than by a second
+            # counter that could drift. It is written AFTER the increment,
+            # using n_h - 1: on the first record n_h is still uninitialised,
+            # and an uninitialised awk variable used as a subscript is the
+            # empty string, not 0. h[n_h++] escapes that because ++ forces
+            # numeric context; hua[n_h] would not have.
             h[n_h++] = $9 + 0
+            hua[n_h - 1] = ua
         }
     }
 }
 END {
     # Height spread among reachable fork nodes. Note this is each node height as
     # of its LAST HANDSHAKE, not right now, so lag here is partly crawl recency.
+    #
+    # The per-UA counters below use the identical bucket boundaries and the same
+    # maxh reference over the identical population (reachable fork nodes only),
+    # so INVARIANT: for each bucket, the sum of heights_by_version[*][bucket]
+    # over all user agents equals the aggregate h_<bucket> for that sample.
     for (i = 0; i < n_h; i++) {
         d = maxh - h[i]
-        if (d == 0) tip++
-        else if (d <= 6) near++
-        else if (d <= 144) day++
-        else behind++
+        u = hua[i]
+        if (d == 0) { tip++; hv_tip[u]++ }
+        else if (d <= 6) { near++; hv_near[u]++ }
+        else if (d <= 144) { day++; hv_day[u]++ }
+        else { behind++; hv_behind[u]++ }
     }
     # Ascending insertion sort over pa[0 .. n_pa-1]; mawk has no asort().
     for (i = 1; i < n_pa; i++) {
@@ -97,6 +111,17 @@ END {
         if (!first) printf ","
         printf "\"%s\":%d", v, ver[v]
         first = 0
+    }
+    # Iterate ver[] again (not the bucket arrays) so every reachable fork-node
+    # user agent appears exactly once, with explicit zeros for empty buckets.
+    # Fresh flag and loop variable: reusing first/v here would emit a stray
+    # leading comma under mawk.
+    printf "},\"heights_by_version\":{"
+    hbv_first = 1
+    for (vk in ver) {
+        if (!hbv_first) printf ","
+        printf "\"%s\":{\"tip\":%d,\"near\":%d,\"day\":%d,\"behind\":%d}", vk, hv_tip[vk]+0, hv_near[vk]+0, hv_day[vk]+0, hv_behind[vk]+0
+        hbv_first = 0
     }
     printf "}}\n"
 }' "$DUMP" >> "$OUT"

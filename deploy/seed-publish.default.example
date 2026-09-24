@@ -1,0 +1,12 @@
+# /etc/default/seed-publish -- settings for seed-publish.service.
+# Copy to /etc/default/seed-publish (mode 0600) and fill in.
+
+# Required: SSH URL of the GitHub Pages repo the census is published to.
+REPO=git@github.com:YOUR-ACCOUNT/YOUR-CENSUS-REPO.git
+
+# Private half of a deploy key with write access to that one repo only.
+KEY=/root/.ssh/census_deploy
+
+# Name and email on the hourly commits (public in that repo's history).
+GIT_NAME=your-seed.example.org
+GIT_EMAIL=you@example.org
