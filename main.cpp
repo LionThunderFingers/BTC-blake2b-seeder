@@ -420,7 +420,10 @@ extern "C" void* ThreadDumper(void*) {
         }
         rename("dnsseed.dat.new", "dnsseed.dat");
       }
-      FILE *d = fopen("dnsseed.dump", "w");
+      // Written to a temp file and renamed, so a reader never sees a partial dump.
+      // dnsseed.dat above already does this; dnsseed.dump did not, and it is the file
+      // the census/status/healthcheck scripts parse.
+      FILE *d = fopen("dnsseed.dump.new", "w");
       fprintf(d, "# address                                        good  lastSuccess    %%(2h)   %%(8h)   %%(1d)   %%(7d)  %%(30d)  blocks      svcs  version\n");
       double stat[5]={0,0,0,0,0};
       for (vector<CAddrReport>::const_iterator it = v.begin(); it < v.end(); it++) {
@@ -433,6 +436,7 @@ extern "C" void* ThreadDumper(void*) {
         stat[4] += rep.uptime[4];
       }
       fclose(d);
+      rename("dnsseed.dump.new", "dnsseed.dump");
       {
         size_t nUnk = 0, nOur = 0, nGood = 0, nFork = 0;
         db.GetSetSizes(nUnk, nOur, nGood, nFork);
