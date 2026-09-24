@@ -74,6 +74,10 @@ bool CAddrDb::Get_(CServiceResult &ip, int &wait) {
         ret = forkRet;
         ip.service = idToInfo[ret].ip;
         ip.ourLastSuccess = idToInfo[ret].ourLastSuccess;
+        // Popped out of every rotation queue until the callback requeues it;
+        // inFlight is what keeps it visible to GetAll() and the serializer in
+        // the meantime (a batch stays outstanding for minutes).
+        inFlight.insert(ret);
         break;
       }
     }
@@ -84,6 +88,15 @@ bool CAddrDb::Get_(CServiceResult &ip, int &wait) {
       unkId.erase(it);
     } else {
       ret = ourId.front();
+      // Same guard as the fork slice: Bad_ erases a banned node's CAddrInfo
+      // without scrubbing ourId, and operator[] below would resurrect it as a
+      // blank phantom that Lookup_ can never match, so its callback would never
+      // clear it from inFlight. Drop the stale id instead.
+      if (idToInfo.count(ret) == 0) {
+        ourId.pop_front();
+        if (ourId.empty()) return false;
+        continue;
+      }
       if (time(NULL) - idToInfo[ret].ourLastTry < MIN_RETRY) return false;
       ourId.pop_front();
     }
@@ -93,6 +106,9 @@ bool CAddrDb::Get_(CServiceResult &ip, int &wait) {
     } else {
       ip.service = idToInfo[ret].ip;
       ip.ourLastSuccess = idToInfo[ret].ourLastSuccess;
+      // Handed out, so out of every rotation queue until the callback runs --
+      // see the fork slice above.
+      inFlight.insert(ret);
       break;
     }
   } while(1);
@@ -139,6 +155,9 @@ void CAddrDb::Good_(const CService &addr, int clientV, std::string clientSV, int
   int id = Lookup_(addr);
   if (id == -1) return;
   unkId.erase(id);
+  // The test Get_ handed out has finished; Requeue_ below puts the id back in a
+  // rotation queue, so it no longer needs tracking as in flight.
+  inFlight.erase(id);
   banned.erase(addr);
   CAddrInfo &info = idToInfo[id];
   info.clientVersion = clientV;
@@ -159,6 +178,10 @@ void CAddrDb::Bad_(const CService &addr, int ban)
   int id = Lookup_(addr);
   if (id == -1) return;
   unkId.erase(id);
+  // Before the ban/no-ban split, so it covers both: the no-ban branch requeues
+  // the id, and the ban branch erases its CAddrInfo -- neither may leave the id
+  // in inFlight, where GetAll() and the serializer would keep looking for it.
+  inFlight.erase(id);
   CAddrInfo &info = idToInfo[id];
   info.Update(false);
   uint32_t now = time(NULL);
@@ -191,6 +214,8 @@ void CAddrDb::Skipped_(const CService &addr)
   int id = Lookup_(addr);
   if (id == -1) return;
   unkId.erase(id);
+  // Test finished (untested, but returned); Requeue_ below re-queues the id.
+  inFlight.erase(id);
   Requeue_(id);
 //  printf("%s: skipped\n", ToString(addr).c_str());
   nDirty++;

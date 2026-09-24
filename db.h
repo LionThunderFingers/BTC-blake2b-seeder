@@ -228,6 +228,15 @@ private:
   // Good_/Bad_/Skipped_ pushes one id back" still holds. Requeue_() is what
   // routes an id to the right queue.
   std::deque<int> forkId;
+  // Ids handed out by Get_ whose mandatory Good_/Bad_/Skipped_ callback has not
+  // run yet. Get_ pops the chosen id out of unkId/ourId/forkId and only the
+  // Requeue_ in that callback puts it back, so for as long as a crawler batch
+  // is outstanding (16 nodes, up to ~35s each) those ids sit in no rotation
+  // container at all. They still exist in idToInfo, so without this set GetAll()
+  // and the serializer below silently omit a rotating slice of the population
+  // from every dnsseed.dump and every dnsseed.dat write. This is not a rotation
+  // queue: nothing may ever select from it, it is only observed.
+  std::set<int> inFlight;
   int nDirty;
   
 protected:
@@ -280,21 +289,45 @@ public:
   std::vector<CAddrReport> GetAll() {
     std::vector<CAddrReport> ret;
     SHARED_CRITICAL_BLOCK(cs) {
-      // Both rotation queues must be walked. forkId is a partition of the tried
+      // All three containers must be walked. forkId is a partition of the tried
       // nodes, not a subset of ourId: a node advertising NODE_BLAKE2B rotates in
       // forkId *instead of* ourId (see Requeue_), so iterating ourId alone would
-      // silently drop every fork node from the census. Do not "tidy" this back
-      // into a single loop.
+      // silently drop every fork node from the census. inFlight holds the nodes
+      // a crawler batch is testing right now, which are in neither queue until
+      // its callback runs. Do not "tidy" this back into a single loop.
+      //
+      // seen is load-bearing, not defensive: an id can genuinely be in two of
+      // these at once. Requeue_ describes the leftover ourId entries kept for
+      // nodes since enrolled in forkId, and popping such a stale entry puts the
+      // id in inFlight while forkId still holds it. Each node must appear in
+      // the dump exactly once; the census scripts count lines.
+      //
+      // idToInfo is read through find() only. operator[] would insert under a
+      // shared (read) lock, and the ids here are not guaranteed to have a
+      // CAddrInfo: Bad_'s ban path erases it without scrubbing ourId.
+      std::set<int> seen;
       for (std::deque<int>::const_iterator it = ourId.begin(); it != ourId.end(); it++) {
-        const CAddrInfo &info = idToInfo[*it];
-        if (info.success > 0) {
-          ret.push_back(info.GetReport());
+        if (!seen.insert(*it).second) continue;
+        std::map<int, CAddrInfo>::const_iterator ci = idToInfo.find(*it);
+        if (ci == idToInfo.end()) continue;
+        if (ci->second.success > 0) {
+          ret.push_back(ci->second.GetReport());
         }
       }
       for (std::deque<int>::const_iterator it = forkId.begin(); it != forkId.end(); it++) {
-        const CAddrInfo &info = idToInfo[*it];
-        if (info.success > 0) {
-          ret.push_back(info.GetReport());
+        if (!seen.insert(*it).second) continue;
+        std::map<int, CAddrInfo>::const_iterator ci = idToInfo.find(*it);
+        if (ci == idToInfo.end()) continue;
+        if (ci->second.success > 0) {
+          ret.push_back(ci->second.GetReport());
+        }
+      }
+      for (std::set<int>::const_iterator it = inFlight.begin(); it != inFlight.end(); it++) {
+        if (!seen.insert(*it).second) continue;
+        std::map<int, CAddrInfo>::const_iterator ci = idToInfo.find(*it);
+        if (ci == idToInfo.end()) continue;
+        if (ci->second.success > 0) {
+          ret.push_back(ci->second.GetReport());
         }
       }
     }
@@ -315,24 +348,38 @@ public:
     SHARED_CRITICAL_BLOCK(cs) {
       if (fWrite) {
         CAddrDb *db = const_cast<CAddrDb*>(this);
-        // forkId is counted and written alongside ourId for the same reason
-        // GetAll() walks both: it is a partition of the tried nodes, not a
-        // subset of ourId, so omitting it would drop every fork node's
-        // accumulated CAddrStat history from the dump. The on-disk format is
-        // unchanged (n simply covers three containers instead of two); the read
-        // path restores these into ourId and they migrate back to forkId on
-        // their first successful crawl.
-        int n = ourId.size() + unkId.size() + forkId.size();
+        // forkId and inFlight are written alongside ourId and unkId for the same
+        // reason GetAll() walks them: forkId is a partition of the tried nodes,
+        // not a subset of ourId, and inFlight holds the nodes a crawler batch is
+        // testing right now, which are in no rotation queue at all. Omitting
+        // either loses that node's accumulated CAddrStat history across the next
+        // restart.
+        //
+        // The id list is built first, deduplicated, and n is the number actually
+        // written. Summing the container sizes would over-count: an id can be in
+        // two containers at once (Requeue_ describes the leftover ourId entries
+        // for nodes since enrolled in forkId; popping one puts the id in
+        // inFlight while forkId still holds it), and ids whose CAddrInfo Bad_
+        // erased when banning survive in ourId, so they are skipped here rather
+        // than dereferenced off the end of idToInfo. Container order is kept so
+        // ourId's rotation order survives a restart.
+        //
+        // The on-disk format is unchanged; the read path restores these into
+        // ourId (they have ourLastTry set) and fork nodes migrate back to forkId
+        // on their first successful crawl.
+        std::vector<int> ids;
+        std::set<int> seen;
+        for (std::deque<int>::const_iterator it = ourId.begin(); it != ourId.end(); it++)
+          if (seen.insert(*it).second && db->idToInfo.count(*it)) ids.push_back(*it);
+        for (std::deque<int>::const_iterator it = forkId.begin(); it != forkId.end(); it++)
+          if (seen.insert(*it).second && db->idToInfo.count(*it)) ids.push_back(*it);
+        for (std::set<int>::const_iterator it = inFlight.begin(); it != inFlight.end(); it++)
+          if (seen.insert(*it).second && db->idToInfo.count(*it)) ids.push_back(*it);
+        for (std::set<int>::const_iterator it = unkId.begin(); it != unkId.end(); it++)
+          if (seen.insert(*it).second && db->idToInfo.count(*it)) ids.push_back(*it);
+        int n = ids.size();
         READWRITE(n);
-        for (std::deque<int>::const_iterator it = ourId.begin(); it != ourId.end(); it++) {
-          std::map<int, CAddrInfo>::iterator ci = db->idToInfo.find(*it);
-          READWRITE((*ci).second);
-        }
-        for (std::deque<int>::const_iterator it = forkId.begin(); it != forkId.end(); it++) {
-          std::map<int, CAddrInfo>::iterator ci = db->idToInfo.find(*it);
-          READWRITE((*ci).second);
-        }
-        for (std::set<int>::const_iterator it = unkId.begin(); it != unkId.end(); it++) {
+        for (std::vector<int>::const_iterator it = ids.begin(); it != ids.end(); it++) {
           std::map<int, CAddrInfo>::iterator ci = db->idToInfo.find(*it);
           READWRITE((*ci).second);
         }
